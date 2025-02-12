@@ -1,24 +1,20 @@
-﻿using System;
-using SocketCANSharp;
-using SocketCANSharp.Network;
-using System.Threading;
+﻿using SocketCANSharp;
 using System.Collections.Concurrent;
-using System.Diagnostics.Metrics;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
-using System.Threading.Tasks;
 using Peak.Can.Basic.BackwardCompatibility;
 using TPCANHandle = System.UInt16;
-//using Microsoft.VisualBasic;
-//using static System.Runtime.InteropServices.JavaScript.JSType;
-using System.Reflection.Metadata;
 
-namespace CANTester
+namespace AbstractCAN
 {
     public interface ICan : IDisposable
     {
         int send(CanFrame frame);
         bool get_messages(out ConcurrentQueue<CanFrame> canFrames);
+        bool IsRunning();
+        bool IsAlive();
+        void start_reading();
+        void stop_reading();
     }
 
     public class LCan : ICan
@@ -31,7 +27,7 @@ namespace CANTester
         private static int O_NONBLOCK = 0x0800;
         public LCan(string _name, bool _read = false)
         {
-            Name = _name ?? "can";
+            Name = _name;
             _mSckt = LibcNativeMethods.Socket(SocketCanConstants.PF_CAN, SocketType.Raw, SocketCanProtocolType.CAN_RAW);
             var ifr = new Ifreq(_name);
             int ioctlResult = LibcNativeMethods.Ioctl(_mSckt, SocketCanConstants.SIOCGIFINDEX, ifr);
@@ -40,7 +36,7 @@ namespace CANTester
 
             var addr = new SockAddrCan(ifr.IfIndex);
             int bindResult = LibcNativeMethods.Bind(_mSckt, addr, Marshal.SizeOf(typeof(SockAddrCan)));
-            start_reading();
+            if(_read) start_reading();
         }
 
         public void Dispose()
@@ -71,7 +67,7 @@ namespace CANTester
 
         private void read()
         {
-            _mRunning = true;
+            Running = true;
             while (_mAlive)
             {
                 var readFrame = new CanFrame();
@@ -81,7 +77,7 @@ namespace CANTester
                     _mMsgQueue.Enqueue(readFrame);
                 }
             }
-            _mRunning = false;
+            Running = false;
         }
 
         public void start_reading()
@@ -96,12 +92,25 @@ namespace CANTester
             _mAlive = false;
             _mReadTask?.Wait();
         }
+
+        public bool IsAlive()
+        {
+            return Alive;
+        }
+
+        public bool IsRunning()
+        {
+            return Running;
+        }
+
         private Task? _mReadTask;
         private ConcurrentQueue<CanFrame> _mMsgQueue = new();
         private bool _mAlive = false;
         private bool _mRunning = false;
-        private System.String _mName;
-        public System.String Name { get => _mName; set => _mName = value; }
+        public bool Alive { get => _mAlive; private set => _mAlive = value; }
+        public bool Running {get => _mRunning; private set => _mRunning = value; }
+        private String _mName = "";
+        public String Name { get => _mName; set => _mName = value; }
         private SafeFileDescriptorHandle? _mSckt;
 
         private void ReleaseUnmanagedResources()
@@ -115,7 +124,7 @@ namespace CANTester
         private TPCANHandle _mHandle;
         private TPCANBaudrate _mBaudrate = TPCANBaudrate.PCAN_BAUD_250K;
         private TPCANStatus _mTpcanStatus = new TPCANStatus();
-        private bool _mConnected;
+        private bool _mRunning;
         private bool _mActive;
         public bool Active { get => _mActive; private set => _mActive = value; }
         public WCan()
@@ -161,6 +170,27 @@ namespace CANTester
             return true;
         }
 
+        public bool IsRunning()
+        {
+            return _mRunning;
+        }
+
+        public bool IsAlive()
+        {
+            return Active;
+        }
+
+        public void start_reading()
+        {
+            startCan();
+        }
+
+        public void stop_reading()
+        {
+            _mHandle = 0x51;
+            _mTpcanStatus = PCANBasic.Uninitialize(_mHandle);
+        }
+
         public bool startCan()
         {
             _mHandle = 0x51;
@@ -169,21 +199,21 @@ namespace CANTester
             _mTpcanStatus = PCANBasic.Reset(PCANBasic.PCAN_USBBUS1);
             if (_mTpcanStatus == TPCANStatus.PCAN_ERROR_OK)
             {
-                _mConnected = true;
+                _mRunning = true;
                 Active = true;
             }
             else
             {
-                _mConnected = false;
+                _mRunning = false;
                 Active = false;
             }
-            return _mConnected;
+            return _mRunning;
         }
 
         public void Dispose()
         {
             get_messages(out ConcurrentQueue<CanFrame> _unused);
-            _mConnected = false;
+            _mRunning = false;
             Active = false;
         }
     }
