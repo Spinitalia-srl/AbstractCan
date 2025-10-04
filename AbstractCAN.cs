@@ -129,7 +129,7 @@ namespace AbstractCAN
         public bool Active { get => _mActive; private set => _mActive = value; }
         public WCan()
         {
-            startCan();
+            startCan(); // true listen only
         }
         public int send(CanFrame frame)
         {
@@ -151,7 +151,7 @@ namespace AbstractCAN
             //PCAN_ERROR_INITIALIZE(0x00040)
         }
 
-        public bool get_messages(out ConcurrentQueue<CanFrame> canFrames)
+        public bool get_messages_old(out ConcurrentQueue<CanFrame> canFrames)
         {
             CanFrame placeholder = new();
             canFrames = new ConcurrentQueue<CanFrame>();
@@ -167,6 +167,42 @@ namespace AbstractCAN
                 } while ((_mTpcanStatus & TPCANStatus.PCAN_ERROR_QRCVEMPTY) != TPCANStatus.PCAN_ERROR_QRCVEMPTY);
             }
             else return false;
+            return true;
+        }
+
+        public bool get_messages(out ConcurrentQueue<CanFrame> canFrames)
+        {
+            canFrames = new ConcurrentQueue<CanFrame>();
+
+            while (true)
+            {
+                // Try to read one message
+                var status = PCANBasic.Read(_mHandle, out TPCANMsg tmp);
+
+                if (status == TPCANStatus.PCAN_ERROR_QRCVEMPTY)
+                {
+                    // Queue empty → done
+                    break;
+                }
+                else if (status == TPCANStatus.PCAN_ERROR_OK)
+                {
+                    // Create a new frame for this message
+                    var frame = new CanFrame
+                    {
+                        Data = tmp.DATA,
+                        Length = tmp.LEN,
+                        CanId = tmp.ID | ((tmp.MSGTYPE == TPCANMessageType.PCAN_MESSAGE_EXTENDED) ? 0x80000000 : 0x00)
+                    };
+                    canFrames.Enqueue(frame);
+                    return true;
+                }
+                else
+                {
+                    //Console.WriteLine($"Error while reading CAN message: {status}");
+                    return false;
+                }
+            }
+
             return true;
         }
 
@@ -191,12 +227,33 @@ namespace AbstractCAN
             _mTpcanStatus = PCANBasic.Uninitialize(_mHandle);
         }
 
-        public bool startCan()
+        public bool startCan(bool listenOnly = false)
         {
-            _mHandle = 0x51;
+            _mHandle = PCANBasic.PCAN_USBBUS1; // 0x51;
             _mTpcanStatus = PCANBasic.Uninitialize(_mHandle);
+            // --- Listen-only mode (same effect as the checkbox in PCAN-View) ---
+            if (listenOnly)
+            {
+                uint on = PCANBasic.PCAN_PARAMETER_ON; // 0x01
+                _mTpcanStatus = PCANBasic.SetValue(
+                    _mHandle,
+                    TPCANParameter.PCAN_LISTEN_ONLY,
+                    ref on,
+                    sizeof(uint));
+
+                if (_mTpcanStatus != TPCANStatus.PCAN_ERROR_OK)
+                {
+                    Console.WriteLine($"PCAN_LISTEN_ONLY failed: {_mTpcanStatus}");
+                    // You can decide to return false or continue in normal mode
+                }
+
+                
+            }
+
+
             _mTpcanStatus = PCANBasic.Initialize(_mHandle, _mBaudrate);
-            _mTpcanStatus = PCANBasic.Reset(PCANBasic.PCAN_USBBUS1);
+            
+            _mTpcanStatus = PCANBasic.Reset(_mHandle);
             if (_mTpcanStatus == TPCANStatus.PCAN_ERROR_OK)
             {
                 _mRunning = true;
